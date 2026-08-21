@@ -63,7 +63,7 @@ from google.genai.types import GenerateContentResponseUsageMetadata
 from google.genai.types import Part
 from mcp import ClientSession as McpClientSession
 from mcp import StdioServerParameters
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
 from mcp.types import CallToolResult
 from mcp.types import ListToolsResult
 from mcp.types import PaginatedRequestParams

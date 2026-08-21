@@ -30,8 +30,8 @@ import logging
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import MCPServer
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
@@ -40,8 +40,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Expected OAuth token for testing
 VALID_TOKEN = 'test_access_token_12345'
 
-# Create FastMCP server
-mcp = FastMCP('OAuth Protected MCP Server', host='localhost', port=3001)
+# Create MCPServer server
+mcp = MCPServer('OAuth Protected MCP Server', host='localhost', port=3001)
 
 
 def validate_auth_header(request: Request) -> bool:
@@ -97,7 +97,7 @@ def list_users(context: Context) -> dict:
   }
 
 
-# FastMCP's own Starlette app is what serves the /mcp endpoint, so mounting it
+# MCPServer's own Starlette app is what serves the /mcp endpoint, so mounting it
 # under a FastAPI app is what puts the auth middleware in front of every MCP
 # request, tool listing included. A mounted app's lifespan is not run by the
 # mount, so the session manager the endpoint depends on is started from the

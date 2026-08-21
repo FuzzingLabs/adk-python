@@ -21,11 +21,11 @@ import sys
 import tempfile
 
 import google.auth.transport.mtls as google_mtls
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 import uvicorn
 
 # Create an MCP server with a name
-mcp = FastMCP("Filesystem Server (mTLS)", host="localhost", port=3000)
+mcp = MCPServer("Filesystem Server (mTLS)", host="localhost", port=3000)
 
 
 # Add a tool to read file contents

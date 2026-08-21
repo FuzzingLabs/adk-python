@@ -40,7 +40,7 @@ import urllib.parse
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
-import httpx
+import httpx2
 
 try:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
@@ -64,9 +64,8 @@ from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
-from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client as _create_mcp_http_client  # pylint: disable=protected-access
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -103,9 +102,9 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
-) -> httpx.AsyncClient:
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+) -> httpx2.AsyncClient:
   """Creates MCP HTTP client and instruments it when OTel is available."""
   client = _create_mcp_http_client(
       headers=headers,
@@ -136,7 +135,7 @@ class _StreamableHttpClientWrapper:
   def __init__(
       self,
       url: str,
-      http_client: httpx.AsyncClient,
+      http_client: httpx2.AsyncClient,
       terminate_on_close: bool = True,
   ):
     self.url = url
@@ -236,12 +235,26 @@ class SseConnectionParams(BaseModel):
 
 
 @runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
+class CheckableMcpHttpClientFactory(Protocol):
+  """Runtime-checkable form of the MCP HTTP client factory signature.
+
+  Structurally identical to `mcp.shared._httpx_utils.McpHttpClientFactory`,
+  restated here because that module is private in mcp 2.x. Keeping our own
+  declaration also keeps the pydantic field annotations below independent of
+  an upstream module we are not supposed to import.
+  """
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
+    ...
 
 
 class _DebugHttpxClientFactory:
-  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info."""
+  """A factory wrapper that hooks into the httpx2.AsyncClient responses to capture debug info."""
 
   def __init__(
       self,
@@ -254,15 +267,15 @@ class _DebugHttpxClientFactory:
   def __call__(
       self,
       headers: dict[str, str] | None = None,
-      timeout: httpx.Timeout | None = None,
-      auth: httpx.Auth | None = None,
-  ) -> httpx.AsyncClient:
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
     client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
 
-  def _extract_session_id(self, response: httpx.Response) -> str | None:
+  def _extract_session_id(self, response: httpx2.Response) -> str | None:
     query_params = urllib.parse.parse_qs(
         urllib.parse.urlparse(str(response.url)).query
     )
@@ -271,7 +284,7 @@ class _DebugHttpxClientFactory:
         or query_params.get('session_id', [None])[0]
     )
 
-  async def _response_hook(self, response: httpx.Response):
+  async def _response_hook(self, response: httpx2.Response):
     debug_list = None
     if self._session_manager is not None:
       session_id = self._extract_session_id(response)
@@ -435,8 +448,8 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       self._creds.refresh(Request())
 
 
-class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
-  """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
+class _GoogleAuthAsyncByteStream(httpx2.AsyncByteStream):
+  """Adapter to bridge google-auth Response.content with httpx2.AsyncByteStream."""
 
   def __init__(self, auth_response: Any):
     self._auth_response = auth_response
@@ -449,15 +462,15 @@ class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
     await self._auth_response.close()
 
 
-class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
-  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
+class _GoogleAuthAsyncTransport(httpx2.AsyncBaseTransport):
+  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx2.AsyncBaseTransport."""
 
   def __init__(self, auth_session: Any):
     self._auth_session = auth_session
 
   async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
+      self, request: httpx2.Request
+  ) -> httpx2.Response:
     content = await request.aread()
     headers_dict = dict(request.headers)
 
@@ -492,7 +505,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
         not in ('content-encoding', 'content-length', 'transfer-encoding')
     }
 
-    return httpx.Response(
+    return httpx2.Response(
         status_code=auth_response.status_code,
         headers=response_headers,
         stream=_GoogleAuthAsyncByteStream(auth_response),
@@ -502,15 +515,15 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
     await self._auth_session.close()
 
 
-class _SharedAsyncTransport(httpx.AsyncBaseTransport):
+class _SharedAsyncTransport(httpx2.AsyncBaseTransport):
   """Wrapper transport that prevents the wrapped transport from being closed."""
 
-  def __init__(self, transport: httpx.AsyncBaseTransport):
+  def __init__(self, transport: httpx2.AsyncBaseTransport):
     self._transport = transport
 
   async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
+      self, request: httpx2.Request
+  ) -> httpx2.Response:
     return await self._transport.handle_async_request(request)
 
   async def aclose(self) -> None:
@@ -518,16 +531,16 @@ class _SharedAsyncTransport(httpx.AsyncBaseTransport):
 
 
 def _create_mtls_client_factory(
-    mtls_transport: httpx.AsyncBaseTransport,
+    mtls_transport: httpx2.AsyncBaseTransport,
 ) -> CheckableMcpHttpClientFactory:
-  """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
+  """Returns a factory that creates httpx2.AsyncClient using the mtls_transport."""
 
   def factory(
       headers: dict[str, Any] | None = None,
-      timeout: httpx.Timeout | None = None,
-      auth: httpx.Auth | None = None,
-  ) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
         headers=headers,
         auth=auth,
         timeout=timeout,
@@ -796,13 +809,38 @@ class MCPSessionManager:
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
+    mcp 2.x moved the transport behind a dispatcher, so the streams are no
+    longer on the session itself and the dispatcher tracks closure directly.
+    A session whose shape matches neither is reported as live: this decides
+    whether a pooled session may be reused, and wrongly calling a working one
+    dead would discard it on every call.
+
     Args:
         session: The ClientSession to check.
 
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    return session._read_stream._closed or session._write_stream._closed
+    dispatcher = getattr(session, '_dispatcher', None)
+    for holder in (dispatcher, session):
+      if holder is None:
+        continue
+
+      # Only a real bool is an answer. A mock answers every attribute with a
+      # truthy object, and taking that for `closed` would throw the session
+      # away and reconnect on every single call.
+      closed = getattr(holder, '_closed', None)
+      if isinstance(closed, bool):
+        return closed
+
+      flags = [
+          getattr(getattr(holder, name, None), '_closed', None)
+          for name in ('_read_stream', '_write_stream')
+      ]
+      if any(isinstance(flag, bool) for flag in flags):
+        return any(flag is True for flag in flags)
+
+    return False
 
   def _get_session_context(
       self, headers: Optional[Dict[str, str]] = None
@@ -1015,7 +1053,7 @@ class MCPSessionManager:
   def _create_client(
       self,
       merged_headers: dict[str, str] | None = None,
-      mtls_transport: httpx.AsyncBaseTransport | None = None,
+      mtls_transport: httpx2.AsyncBaseTransport | None = None,
       *,
       session_key: str | None = None,
   ) -> AbstractAsyncContextManager[Any]:
@@ -1067,7 +1105,7 @@ class MCPSessionManager:
       )
       http_client = debug_factory(
           headers=merged_headers,
-          timeout=httpx.Timeout(
+          timeout=httpx2.Timeout(
               self._connection_params.timeout,
               read=self._connection_params.sse_read_timeout,
           ),

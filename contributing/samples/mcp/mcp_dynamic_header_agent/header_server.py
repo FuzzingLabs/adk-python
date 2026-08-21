@@ -15,10 +15,10 @@
 from __future__ import annotations
 
 from fastapi import Request
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP('Header Check Server', host='localhost', port=3000)
+mcp = MCPServer('Header Check Server', host='localhost', port=3000)
 
 TENANT_DATA = {
     'tenant1': {'name': 'Tenant 1', 'data': 'Data for tenant 1'},

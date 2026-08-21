@@ -18,10 +18,10 @@ import os
 from pathlib import Path
 import sys
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Create an MCP server with a name
-mcp = FastMCP("Filesystem Server", host="localhost", port=3000)
+mcp = MCPServer("Filesystem Server", host="localhost", port=3000)
 
 
 # Add a tool to read file contents

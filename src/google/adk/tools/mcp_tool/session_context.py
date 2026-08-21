@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
-from datetime import timedelta
 import logging
 from types import TracebackType
 from typing import Any
@@ -346,9 +345,7 @@ class SessionContext:
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(seconds=self._timeout)
-                  if self._timeout is not None
-                  else None,
+                  read_timeout_seconds=self._timeout,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
@@ -360,9 +357,7 @@ class SessionContext:
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(seconds=self._sse_read_timeout)
-                  if self._sse_read_timeout is not None
-                  else None,
+                  read_timeout_seconds=self._sse_read_timeout,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,

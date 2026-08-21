@@ -36,7 +36,7 @@ from mcp import SamplingCapability
 from mcp import StdioServerParameters
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from mcp.types import Tool as McpBaseTool
@@ -594,7 +594,11 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        # by_alias keeps the wire spelling of resource metadata (mimeType,
+        # not mime_type) now that mcp 2.x models are snake_case internally.
+        return resource.model_dump(
+            mode="json", exclude_none=True, by_alias=True
+        )
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:

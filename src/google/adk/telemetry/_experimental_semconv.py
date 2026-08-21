@@ -394,7 +394,9 @@ def _model_dump_to_tool_definition(
       else _string_attribute(tool, 'description')
   )
   parameters = _clean_parameters(
-      model_dump.get('parameters') or model_dump.get('inputSchema')
+      model_dump.get('parameters')
+      or model_dump.get('input_schema')
+      or model_dump.get('inputSchema')
   )
   return FunctionToolDefinition(
       name=name,

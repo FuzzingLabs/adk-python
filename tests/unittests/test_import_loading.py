@@ -60,6 +60,10 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'fastapi',
     'google',
     'httpx',
+    # The MCP session manager builds its HTTP clients at module scope, and
+    # mcp 2.x moved that surface from httpx to httpx2. Eager for the same
+    # reason httpx above is, and no more so than before the 2.x bump.
+    'httpx2',
     'opentelemetry',
     'packaging',
     'pydantic',

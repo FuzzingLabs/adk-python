@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import AsyncGenerator
 
+import anyio
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
@@ -25,8 +27,45 @@ from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
 from google.adk.tools.mcp_tool._agent_to_mcp import _run_agent
 from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
 from google.genai import types
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import ClientSession
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.memory import create_client_server_memory_streams
 import pytest
+
+
+@asynccontextmanager
+async def create_connected_server_and_client_session(
+    server: MCPServer,
+) -> AsyncGenerator[ClientSession, None]:
+  """Runs `server` over in-memory streams and yields a client bound to it.
+
+  mcp 2.x dropped the SDK helper that used to do this, so the wiring lives
+  here: a task group runs the lowlevel server against one end of a memory
+  stream pair while the client session speaks to the other.
+  """
+  async with create_client_server_memory_streams() as (
+      client_streams,
+      server_streams,
+  ):
+    client_read, client_write = client_streams
+    server_read, server_write = server_streams
+    lowlevel = server._lowlevel_server  # pylint: disable=protected-access
+
+    async with anyio.create_task_group() as task_group:
+      task_group.start_soon(
+          lambda: lowlevel.run(
+              server_read,
+              server_write,
+              lowlevel.create_initialization_options(),
+              raise_exceptions=True,
+          )
+      )
+      try:
+        async with ClientSession(client_read, client_write) as client:
+          await client.initialize()
+          yield client
+      finally:
+        task_group.cancel_scope.cancel()
 
 
 class _EchoAgent(BaseAgent):
@@ -135,7 +174,7 @@ async def test_to_mcp_server_registers_agent_as_single_tool():
   assert len(tools) == 1
   assert tools[0].name == "my_agent"
   assert tools[0].description == "does useful things"
-  assert "request" in tools[0].inputSchema["properties"]
+  assert "request" in tools[0].input_schema["properties"]
 
 
 @pytest.mark.asyncio
@@ -156,7 +195,7 @@ async def test_call_tool_runs_agent_end_to_end():
   async with create_connected_server_and_client_session(server) as client:
     result = await client.call_tool("assistant", {"request": "hi"})
 
-  assert not result.isError
+  assert not result.is_error
   assert "hello from the agent" in result.content[0].text
 
 
@@ -198,7 +237,7 @@ async def test_run_agent_maps_image_output_to_image_content():
 
   assert len(result) == 1
   assert result[0].type == "image"
-  assert result[0].mimeType == "image/png"
+  assert result[0].mime_type == "image/png"
   assert base64.b64decode(result[0].data) == png
 
 

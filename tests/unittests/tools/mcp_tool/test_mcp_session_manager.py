@@ -18,6 +18,7 @@ import json
 import logging
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -40,7 +41,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-import httpx
+import httpx2
 from mcp import StdioServerParameters
 import pytest
 
@@ -273,7 +274,7 @@ class TestMCPSessionManager:
     kwargs = mock_streamable_http_client.call_args.kwargs
     assert kwargs["url"] == "https://example.com/mcp"
     assert kwargs["terminate_on_close"] is True
-    assert isinstance(kwargs["http_client"], httpx.AsyncClient)
+    assert isinstance(kwargs["http_client"], httpx2.AsyncClient)
 
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",
@@ -389,6 +390,27 @@ class TestMCPSessionManager:
     # Disconnected - read stream closed
     session._read_stream._closed = True
     assert manager._is_session_disconnected(session)
+
+  def test_is_session_disconnected_reads_the_dispatcher_in_mcp_2x(self):
+    """mcp 2.x puts the transport behind a dispatcher, not on the session.
+
+    Reading the old attributes raised, which broke every session creation --
+    a real client is what caught it, because the mocks here have the 1.x
+    shape.
+    """
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    live = SimpleNamespace(_dispatcher=SimpleNamespace(_closed=False))
+    assert not manager._is_session_disconnected(live)
+
+    dead = SimpleNamespace(_dispatcher=SimpleNamespace(_closed=True))
+    assert manager._is_session_disconnected(dead)
+
+  def test_is_session_disconnected_defaults_to_live_when_unrecognized(self):
+    """An unfamiliar session must not be discarded on every single call."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    assert not manager._is_session_disconnected(SimpleNamespace())
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -1421,7 +1443,7 @@ class TestMCPSessionManager:
     sse_params = SseConnectionParams(url="https://example.com/mcp")
     manager = MCPSessionManager(sse_params)
 
-    mock_transport = Mock(spec=httpx.AsyncBaseTransport)
+    mock_transport = Mock(spec=httpx2.AsyncBaseTransport)
 
     manager._create_client(mtls_transport=mock_transport)
 
@@ -1430,8 +1452,8 @@ class TestMCPSessionManager:
     factory = called_kwargs["httpx_client_factory"]
 
     # Verify the factory creates client with transport
-    client = factory(headers={"a": "b"}, timeout=httpx.Timeout(10.0))
-    assert isinstance(client, httpx.AsyncClient)
+    client = factory(headers={"a": "b"}, timeout=httpx2.Timeout(10.0))
+    assert isinstance(client, httpx2.AsyncClient)
     assert isinstance(client._transport, _SharedAsyncTransport)
     assert client._transport._transport == mock_transport
     assert client.headers.get("a") == "b"
@@ -1452,7 +1474,7 @@ class TestMCPSessionManager:
 
     transport = _GoogleAuthAsyncTransport(mock_session)
 
-    request = httpx.Request(
+    request = httpx2.Request(
         "GET", "https://example.com/api", headers={"x-test": "value"}
     )
 
@@ -1942,7 +1964,7 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_debug_factory_registers_hook(self):
     """Test that the debug factory registers the response hook on client creation."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
     base_factory = Mock(return_value=base_client)
     debug_factory = _DebugHttpxClientFactory(base_factory)
 
@@ -1954,21 +1976,21 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_response_hook_records_when_var_set(self):
     """Test that the response hook records HTTP info when _http_debug_var is set."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
     base_factory = Mock(return_value=base_client)
     debug_factory = _DebugHttpxClientFactory(base_factory)
 
-    # Mock httpx.Response
-    mock_request = Mock(spec=httpx.Request)
+    # Mock httpx2.Response
+    mock_request = Mock(spec=httpx2.Request)
     mock_request.method = "GET"
     mock_request.content = b"request body"
-    mock_request.headers = httpx.Headers({"X-Req": "val"})
+    mock_request.headers = httpx2.Headers({"X-Req": "val"})
 
-    mock_response = Mock(spec=httpx.Response)
-    mock_response.url = httpx.URL("https://example.com/test")
+    mock_response = Mock(spec=httpx2.Response)
+    mock_response.url = httpx2.URL("https://example.com/test")
     mock_response.status_code = 200
     mock_response.request = mock_request
-    mock_response.headers = httpx.Headers({
+    mock_response.headers = httpx2.Headers({
         "content-type": "application/json",
         "X-Resp": "val",
     })
@@ -1997,11 +2019,11 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_response_hook_does_not_record_when_var_not_set(self):
     """Test that the response hook does not record when _http_debug_var is not set."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
     base_factory = Mock(return_value=base_client)
     debug_factory = _DebugHttpxClientFactory(base_factory)
 
-    mock_response = Mock(spec=httpx.Response)
+    mock_response = Mock(spec=httpx2.Response)
     mock_response.aread = AsyncMock()
 
     # _http_debug_var is not set (default None)
@@ -2012,20 +2034,22 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_response_hook_skips_sse_body(self):
     """Test that the response hook avoids reading the body for SSE streams."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
     base_factory = Mock(return_value=base_client)
     debug_factory = _DebugHttpxClientFactory(base_factory)
 
-    mock_request = Mock(spec=httpx.Request)
+    mock_request = Mock(spec=httpx2.Request)
     mock_request.method = "GET"
     mock_request.content = None
-    mock_request.headers = httpx.Headers()
+    mock_request.headers = httpx2.Headers()
 
-    mock_response = Mock(spec=httpx.Response)
-    mock_response.url = httpx.URL("https://example.com/sse")
+    mock_response = Mock(spec=httpx2.Response)
+    mock_response.url = httpx2.URL("https://example.com/sse")
     mock_response.status_code = 200
     mock_response.request = mock_request
-    mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+    mock_response.headers = httpx2.Headers(
+        {"content-type": "text/event-stream"}
+    )
     mock_response.aread = AsyncMock()
 
     debug_list = []
@@ -2044,10 +2068,10 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_debug_factory_passes_keyword_arguments(self):
     """Test that the debug factory passes keyword arguments to base_factory."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
 
     # A factory function that only accepts keyword arguments
-    def keyword_only_factory(**kwargs) -> httpx.AsyncClient:
+    def keyword_only_factory(**kwargs) -> httpx2.AsyncClient:
       assert "headers" in kwargs
       assert "timeout" in kwargs
       assert "auth" in kwargs
@@ -2063,7 +2087,7 @@ class TestDebugHttpxClientFactory:
   @pytest.mark.asyncio
   async def test_response_hook_truncates_large_bodies(self):
     """Test that response hook truncates request and response bodies exceeding limit."""
-    base_client = httpx.AsyncClient()
+    base_client = httpx2.AsyncClient()
     base_factory = Mock(return_value=base_client)
     debug_factory = _DebugHttpxClientFactory(base_factory)
 
@@ -2071,16 +2095,16 @@ class TestDebugHttpxClientFactory:
     large_req_body = b"a" * 1500
     large_resp_body = "b" * 1500
 
-    mock_request = Mock(spec=httpx.Request)
+    mock_request = Mock(spec=httpx2.Request)
     mock_request.method = "POST"
     mock_request.content = large_req_body
-    mock_request.headers = httpx.Headers()
+    mock_request.headers = httpx2.Headers()
 
-    mock_response = Mock(spec=httpx.Response)
-    mock_response.url = httpx.URL("https://example.com/large")
+    mock_response = Mock(spec=httpx2.Response)
+    mock_response.url = httpx2.URL("https://example.com/large")
     mock_response.status_code = 200
     mock_response.request = mock_request
-    mock_response.headers = httpx.Headers({"content-type": "application/json"})
+    mock_response.headers = httpx2.Headers({"content-type": "application/json"})
     mock_response.text = large_resp_body
     mock_response.aread = AsyncMock()
 

@@ -52,7 +52,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool import StdioConnectionParams
 from mcp import StdioServerParameters
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _mock_server_path = os.path.join(_current_dir, "mock_progress_server.py")

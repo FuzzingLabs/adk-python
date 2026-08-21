@@ -44,7 +44,7 @@ async def list_tools() -> list[Tool]:
               "A simulated long-running task that reports progress. "
               "Use this to test progress callback functionality."
           ),
-          inputSchema={
+          input_schema={
               "type": "object",
               "properties": {
                   "steps": {
@@ -65,7 +65,7 @@ async def list_tools() -> list[Tool]:
       Tool(
           name="process_items",
           description="Process a list of items with progress reporting.",
-          inputSchema={
+          input_schema={
               "type": "object",
               "properties": {
                   "items": {

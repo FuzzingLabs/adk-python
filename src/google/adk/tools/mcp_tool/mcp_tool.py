@@ -29,8 +29,8 @@ import warnings
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp import ClientSession
-from mcp.shared.exceptions import McpError
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
+from mcp.shared.exceptions import MCPError
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
@@ -222,8 +222,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = self._mcp_tool.input_schema
+    output_schema = self._mcp_tool.output_schema
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -396,8 +396,8 @@ class McpTool(BaseAuthenticatedTool):
       # any AGW policy) returns a 403 mid-tool-call.
       try:
         return await super().run_async(args=args, tool_context=tool_context)
-      except McpError as e:
-        logger.warning("MCP tool execution failed with McpError: %s", e)
+      except MCPError as e:
+        logger.warning("MCP tool execution failed with MCPError: %s", e)
         return {"error": f"MCP tool execution failed: {e}"}
       except Exception as e:  # pylint: disable=broad-exception-caught
         logger.warning(
@@ -508,7 +508,12 @@ class McpTool(BaseAuthenticatedTool):
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
-    result = response.model_dump(exclude_none=True, mode="json")
+    # by_alias is what keeps the payload the model sees stable: mcp 2.x renamed
+    # every model field to snake_case and kept the wire names as aliases, so
+    # dumping without it would silently turn `isError` into `is_error` in every
+    # tool response, and stop `_detect_error_in_response` from recognizing a
+    # failed call.
+    result = response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
     # Push UI widget to the event actions if the tool supports it.
     if self.mcp_app_resource_uri:
