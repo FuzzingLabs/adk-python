@@ -31,9 +31,11 @@ from typing import Any
 from typing import AsyncIterator
 from typing import Callable
 from typing import Dict
+from typing import Mapping
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
+from typing import Sequence
 from typing import TextIO
 import urllib.parse
 
@@ -60,6 +62,8 @@ except ImportError:
 from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.extension import NotificationBinding
+from mcp.client.extension import ResultClaim
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
@@ -119,6 +123,23 @@ def create_mcp_http_client(
 _http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
     contextvars.ContextVar('_http_debug_var', default=None)
 )
+
+
+def _index_claims_by_model(
+    result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None,
+) -> dict[type[Any], ResultClaim[Any]]:
+  """Indexes result claims by the model each one parses into.
+
+  A claimed `tools/call` response arrives already parsed into the claim's
+  model, and its type is the only thing tying it back to the claim that has
+  to resolve it. `ClientSession` validates and parses but never resolves, so
+  the lookup has to live on this side.
+  """
+  by_model: dict[type[Any], ResultClaim[Any]] = {}
+  for claims in (result_claims or {}).values():
+    for claim in claims:
+      by_model[claim.model] = claim
+  return by_model
 
 
 def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -572,6 +593,9 @@ class MCPSessionManager:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None = None,
+      notification_bindings: Sequence[NotificationBinding[Any]] | None = None,
   ):
     """Initializes the MCP session manager.
 
@@ -587,10 +611,19 @@ class MCPSessionManager:
         elicitation_callback: Optional callback to handle elicitation requests
           from the MCP server (``elicitation/create``), including URL-mode
           elicitations used for out-of-band flows such as auth challenges.
+        extensions: MCP extensions to advertise, keyed by extension
+          identifier.
+        result_claims: Non-core ``tools/call`` result shapes to accept, keyed
+          by the identifier of the extension that defines them.
+        notification_bindings: Handlers for extension notifications.
     """
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
+    self._claims_by_model = _index_claims_by_model(result_claims)
 
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
@@ -841,6 +874,10 @@ class MCPSessionManager:
         return any(flag is True for flag in flags)
 
     return False
+
+  def _claim_for(self, result: Any) -> Optional[ResultClaim[Any]]:
+    """Returns the claim that owns `result`, if any is registered for it."""
+    return self._claims_by_model.get(type(result))
 
   def _get_session_context(
       self, headers: Optional[Dict[str, str]] = None
@@ -1220,6 +1257,9 @@ class MCPSessionManager:
             sampling_callback=self._sampling_callback,
             sampling_capabilities=self._sampling_capabilities,
             elicitation_callback=self._elicitation_callback,
+            extensions=self._extensions,
+            result_claims=self._result_claims,
+            notification_bindings=self._notification_bindings,
         )
 
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access

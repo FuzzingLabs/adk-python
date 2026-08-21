@@ -21,13 +21,19 @@ import logging
 from types import TracebackType
 from typing import Any
 from typing import Coroutine
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TypeVar
 
+import anyio
 from mcp import ClientSession
 from mcp import SamplingCapability
+from mcp.client.extension import NotificationBinding
+from mcp.client.extension import ResultClaim
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
+from mcp.shared.exceptions import MCPError
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
@@ -35,6 +41,11 @@ from ...features import is_feature_enabled
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
+
+# The SDK's own ceiling for one `server/discover` probe. Used here as the cap
+# on the whole negotiation budget, so a slow probe cannot starve the
+# `initialize()` fallback that follows it.
+_DISCOVER_TIMEOUT_SECONDS = 10.0
 
 
 def _format_exception(exc: BaseException | None) -> str:
@@ -97,6 +108,9 @@ class SessionContext:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None = None,
+      notification_bindings: Sequence[NotificationBinding[Any]] | None = None,
   ):
     """Initializes SessionContext.
 
@@ -114,6 +128,13 @@ class SessionContext:
       sampling_capabilities: Optional capabilities for sampling.
       elicitation_callback: Optional callback to handle elicitation requests
         from the MCP server (``elicitation/create``).
+      extensions: MCP extensions this client advertises, keyed by extension
+        identifier. Supplying any extension argument also makes the session
+        negotiate with ``server/discover`` first, because extensions are only
+        live on a modern connection.
+      result_claims: Non-core ``tools/call`` result shapes to accept, keyed by
+        the identifier of the extension that defines them.
+      notification_bindings: Handlers for extension notifications.
     """
     self._client = client
     self._timeout = timeout
@@ -127,6 +148,9 @@ class SessionContext:
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -218,7 +242,12 @@ class SessionContext:
 
     return self._session  # type: ignore[return-value]
 
-  async def _run_guarded(self, coro: Coroutine[Any, Any, _T]) -> _T:
+  async def _run_guarded(
+      self,
+      coro: Coroutine[Any, Any, _T],
+      *,
+      propagate_cancel: bool = False,
+  ) -> _T:
     """Run a coroutine while monitoring the background session task.
 
     Races the given coroutine against the background task. If the task
@@ -228,6 +257,13 @@ class SessionContext:
 
     Args:
         coro: The coroutine to run (e.g. session.call_tool(...)).
+        propagate_cancel: Whether to cancel ``coro`` when this call is itself
+            cancelled. ``asyncio.wait`` does not cancel what it waits on, so
+            by default a cancelled caller leaves ``coro`` running detached.
+            That is tolerable for a single request, which the transport will
+            eventually fail, but not for a coroutine that has cleanup of its
+            own to do on the wire: it would never be told to run it. Off by
+            default so the existing call path keeps its current semantics.
 
     Returns:
         The result of the coroutine.
@@ -250,10 +286,19 @@ class SessionContext:
 
     coro_task = asyncio.ensure_future(coro)
 
-    done, _ = await asyncio.wait(
-        [coro_task, self._task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+      done, _ = await asyncio.wait(
+          [coro_task, self._task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+    except asyncio.CancelledError:
+      if propagate_cancel and not coro_task.done():
+        coro_task.cancel()
+        try:
+          await coro_task
+        except BaseException:
+          pass
+      raise
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
@@ -311,6 +356,50 @@ class SessionContext:
   ) -> None:
     await self.close()
 
+  @property
+  def _wants_extensions(self) -> bool:
+    """Whether any MCP extension was configured on this session."""
+    return bool(
+        self._extensions or self._result_claims or self._notification_bindings
+    )
+
+  async def _negotiate(self, session: ClientSession) -> None:
+    """Brings `session` up, preferring `server/discover` when it can matter.
+
+    `initialize()` always performs the pre-2026 handshake, and an extension
+    capability has nowhere to ride on that wire -- the SDK drops
+    claim-bearing identifiers from the advertisement at legacy protocol
+    versions, so a claim registered on this session would never fire. Only
+    `server/discover` reaches a version where extensions are live.
+
+    A server that predates `server/discover` answers it with an error, so the
+    probe is bounded and falls back rather than failing the session. The
+    bound matters: the probe and the fallback share one bring-up budget, and
+    an unbounded probe against a server that simply never answers would spend
+    all of it and leave nothing for `initialize()`.
+    """
+    if not self._wants_extensions:
+      await session.initialize()
+      return
+
+    budget = min(
+        self._timeout or _DISCOVER_TIMEOUT_SECONDS, _DISCOVER_TIMEOUT_SECONDS
+    )
+    try:
+      with anyio.fail_after(budget / 2):
+        session.adopt(await session.discover())
+      return
+    except (MCPError, RuntimeError, TimeoutError) as e:
+      # RuntimeError is what `adopt` raises when the server and this client
+      # share no modern protocol version.
+      logger.warning(
+          'MCP extensions were requested but server/discover is unavailable'
+          ' (%s); falling back to initialize(). Extensions, including tasks,'
+          ' stay inactive on this session.',
+          e,
+      )
+    await session.initialize()
+
   async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
@@ -349,6 +438,9 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  extensions=self._extensions,
+                  result_claims=self._result_claims,
+                  notification_bindings=self._notification_bindings,
               )
           )
         else:
@@ -361,6 +453,9 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  extensions=self._extensions,
+                  result_claims=self._result_claims,
+                  notification_bindings=self._notification_bindings,
               )
           )
         # pylint: disable-next=protected-access
@@ -368,12 +463,12 @@ class SessionContext:
           # Use anyio.fail_after to keep session.initialize within the AnyIO
           # cancel scope instead of asyncio.wait_for which runs in a nested
           # task.
-          import anyio
-
           with anyio.fail_after(self._timeout):
-            await session.initialize()
+            await self._negotiate(session)
         else:
-          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+          await asyncio.wait_for(
+              self._negotiate(session), timeout=self._timeout
+          )
         logger.debug('Session has been successfully initialized')
 
         self._session = session

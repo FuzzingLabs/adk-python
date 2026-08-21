@@ -26,7 +26,9 @@ from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TextIO
 from typing import TypeVar
 from typing import Union
@@ -34,6 +36,8 @@ import warnings
 
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.extension import NotificationBinding
+from mcp.client.extension import ResultClaim
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.shared.dispatcher import ProgressFnT
@@ -169,6 +173,9 @@ class McpToolset(BaseToolset):
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None = None,
+      notification_bindings: Sequence[NotificationBinding[Any]] | None = None,
       credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
@@ -220,6 +227,16 @@ class McpToolset(BaseToolset):
       elicitation_callback: Optional callback to handle elicitation requests
         from the MCP server (``elicitation/create``), including URL-mode
         elicitations used for out-of-band flows such as auth challenges.
+      extensions: MCP extensions this client advertises, keyed by extension
+        identifier (e.g. ``{"io.modelcontextprotocol/tasks": {}}``). Passing
+        any of the three extension arguments also switches session bring-up
+        to ``server/discover``, falling back to ``initialize()``, because an
+        extension capability is only live on a modern connection.
+      result_claims: Non-core ``tools/call`` result shapes to accept, keyed by
+        the identifier of the extension that defines them. The toolset
+        resolves a claimed result through its claim before handing it to the
+        agent, so the agent sees an ordinary tool result either way.
+      notification_bindings: Handlers for extension notifications.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
@@ -229,6 +246,9 @@ class McpToolset(BaseToolset):
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -259,6 +279,9 @@ class McpToolset(BaseToolset):
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
+        extensions=self._extensions,
+        result_claims=self._result_claims,
+        notification_bindings=self._notification_bindings,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential

@@ -19,6 +19,7 @@ import itertools
 import pickle
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -897,6 +898,42 @@ class TestMcpToolset:
     assert called["value"] is True
     assert result["role"] == "assistant"
     assert result["content"]["text"] == "sampling response"
+
+  def test_extension_arguments_plumbed_to_session_manager(self):
+    """The three extension arguments reach the session manager."""
+    extensions = {"io.modelcontextprotocol/tasks": {}}
+    result_claims = {
+        "io.modelcontextprotocol/tasks": [SimpleNamespace(model=object)]
+    }
+    notification_bindings = ["sentinel-binding"]
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        extensions=extensions,
+        result_claims=result_claims,
+        notification_bindings=notification_bindings,
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions is extensions
+    assert toolset._mcp_session_manager._extensions is extensions
+    assert toolset._mcp_session_manager._result_claims is result_claims
+    assert (
+        toolset._mcp_session_manager._notification_bindings
+        is notification_bindings
+    )
+    # pylint: enable=protected-access
+
+  def test_extension_arguments_default_to_none(self):
+    """A toolset without extensions advertises none."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+
+    # pylint: disable=protected-access
+    assert toolset._extensions is None
+    assert toolset._result_claims is None
+    assert toolset._notification_bindings is None
+    assert not toolset._mcp_session_manager._claims_by_model
+    # pylint: enable=protected-access
 
   @pytest.mark.asyncio
   async def test_elicitation_callback_plumbed_to_session_manager(self):
