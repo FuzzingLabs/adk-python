@@ -39,6 +39,7 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
+from google.adk.tools.mcp_tool._tasks import TASKS_EXTENSION_ID
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
@@ -923,6 +924,58 @@ class TestMcpToolset:
         is notification_bindings
     )
     # pylint: enable=protected-access
+
+  def test_enable_tasks_registers_the_extension_and_its_claim(self):
+    """The advertisement and the claim have to be added together."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, enable_tasks=True
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions == {TASKS_EXTENSION_ID: {}}
+    claims = toolset._result_claims[TASKS_EXTENSION_ID]
+    assert [c.result_type for c in claims] == ["task"]
+    assert toolset._mcp_session_manager._claims_by_model
+    # pylint: enable=protected-access
+
+  def test_enable_tasks_preserves_caller_supplied_extensions(self):
+    """Opting into tasks must not drop an extension the caller carried."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        enable_tasks=True,
+        extensions={"vendor/ext": {"setting": True}},
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions == {
+        "vendor/ext": {"setting": True},
+        TASKS_EXTENSION_ID: {},
+    }
+    # pylint: enable=protected-access
+
+  def test_enable_tasks_is_off_by_default(self):
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+
+    # pylint: disable=protected-access
+    assert toolset._enable_tasks is False
+    assert toolset._extensions is None
+    # pylint: enable=protected-access
+
+  def test_enable_tasks_conflicting_with_a_caller_entry_is_refused(self):
+    """Two claims on one result type only fails much later otherwise."""
+    with pytest.raises(ValueError, match="conflicts with"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          enable_tasks=True,
+          extensions={TASKS_EXTENSION_ID: {}},
+      )
+
+    with pytest.raises(ValueError, match="conflicts with"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          enable_tasks=True,
+          result_claims={TASKS_EXTENSION_ID: [SimpleNamespace(model=object)]},
+      )
 
   def test_extension_arguments_default_to_none(self):
     """A toolset without extensions advertises none."""
